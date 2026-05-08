@@ -218,7 +218,7 @@ churn-intelligence-platform/
 ## 👤 Author
 
 **Henry Dibie** — ML Systems Engineer  
-[LinkedIn](https://linkedin.com/in/kinghenrymorgan) · [GitHub](https://github.com/HenryMorganDibie) · [Upwork](https://www.upwork.com/freelancers/~henrydibie)
+[LinkedIn](https://linkedin.com/in/kinghenrymorgan) · [GitHub](https://github.com/HenryMorganDibie)
 
 ---
 
