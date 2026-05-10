@@ -11,11 +11,6 @@ Built as a reference implementation of a principal-level ML system — covering 
 
 ---
 
-🔴 **[Live Demo →](https://henrymorgandibie.github.io/churn-intelligence-platform)**
-
-
----
-
 ## 🏗️ Architecture
 
 ```
