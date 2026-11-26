@@ -1,0 +1,20 @@
+# Single replica, no autoscaler: for kind/minikube/Docker Desktop on a laptop.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - ../../base
+patches:
+  - target: {kind: HorizontalPodAutoscaler, name: churn-api}
+    patch: |-
+      $patch: delete
+      apiVersion: autoscaling/v2
+      kind: HorizontalPodAutoscaler
+      metadata: {name: churn-api}
+  - target: {kind: Deployment, name: churn-api}
+    patch: |-
+      - op: replace
+        path: /spec/replicas
+        value: 1
+      - op: replace
+        path: /spec/template/spec/containers/0/resources/requests/cpu
+        value: 100m

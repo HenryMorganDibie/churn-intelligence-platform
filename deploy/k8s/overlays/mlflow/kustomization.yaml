@@ -1,0 +1,19 @@
+# Full loop: MLflow server, a training Job that registers + gates the model, and the
+# API serving whatever version holds the "champion" alias. API pods stay NotReady
+# (readiness 503) until the first champion exists, then become Ready on their own.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: churn
+resources:
+  - ../dev
+  - mlflow-server.yaml
+  - train-job.yaml
+patches:
+  - target: {kind: ConfigMap, name: churn-api-config}
+    patch: |-
+      - op: replace
+        path: /data/MLFLOW_SERVE_ALIAS
+        value: champion
+      - op: add
+        path: /data/MLFLOW_TRACKING_URI
+        value: http://mlflow:5000

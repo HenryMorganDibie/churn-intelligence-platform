@@ -154,10 +154,13 @@ docker-compose up --build
 ```json
 {
   "model_loaded": true,
-  "auc_roc": 0.8712,
-  "brier_score": 0.1643
+  "auc_roc": 0.986,
+  "brier_score": 0.0467,
+  "provenance": {"source": "mlflow", "model_name": "churn-xgb", "alias": "champion", "version": 1, "run_id": "..."}
 }
 ```
+
+`GET /health/ready` returns 200 once a model is loaded and 503 otherwise (used by the Kubernetes readiness probe).
 
 ---
 
@@ -167,21 +170,66 @@ docker-compose up --build
 pytest tests/ -v
 ```
 
-Tests cover feature engineering edge cases, column alignment, encoding correctness, and boundary conditions.
+17 tests: feature engineering edge cases and column alignment; disjoint train/calibration/test splits; the champion/challenger promotion gate; MLflow registration with a rejected weaker challenger; the API serving the registry `champion` alias end to end; and readiness returning 503 when no model is loaded.
 
 ---
 
 ## 📊 Model Performance
 
-Trained and evaluated on 8,000 synthetic customer records (80/20 split, stratified):
+Measured on the held-out test split of 8,000 records (60% train / 20% calibration / 20% test, stratified; calibration and test are disjoint):
 
 | Metric | Score |
 |---|---|
-| AUC-ROC | ~0.87 |
-| Brier Score | ~0.16 |
-| Calibration | Isotonic (CV=3) |
+| AUC-ROC | 0.986 |
+| Brier Score (calibrated) | 0.047 |
+| Brier Score (uncalibrated) | 0.048 |
+| Calibration | Isotonic, fitted on the calibration split only |
 
-> To train on your own data: replace `generate_synthetic_data()` in `app/models/trainer.py` with your actual data ingestion logic. Feature schema is defined in `app/features/engineer.py`.
+> To train on your own data, swap the data loader in `app/models/trainer.py`; the feature schema is in `app/features/engineer.py`.
+
+---
+
+## 🧪 Experiment Tracking & Model Registry (MLflow)
+
+Every training run is logged to MLflow: XGBoost parameters, data metadata, held-out AUC and Brier (calibrated and uncalibrated), the full artifact bundle (calibrated model, SHAP explainer, feature list, training reference sample) and an MLflow sklearn model with an inferred signature.
+
+Each run registers a new version of `churn-xgb` and goes through a **champion/challenger gate**:
+
+- the new version always gets the `challenger` alias;
+- it takes the `champion` alias only if held-out AUC improves by at least `PROMOTION_MIN_AUC_GAIN` (default 0.002) **and** Brier does not worsen by more than `PROMOTION_MAX_BRIER_INCREASE` (default 0.002);
+- the decision and reason are written as version tags (`gate_decision`, `gate_reason`).
+
+```bash
+python -m app.models.trainer                         # logs to ./mlruns
+MLFLOW_SERVE_ALIAS=champion uvicorn app.main:app     # API loads whatever version is champion
+curl localhost:8000/health/model                     # shows source, alias, version and run_id
+```
+
+---
+
+## ☸️ Kubernetes Deployment
+
+Kustomize manifests live in `deploy/k8s`:
+
+| Path | What it deploys |
+|---|---|
+| `base/` | Namespace, ConfigMap, Deployment (2 replicas, rolling update with zero unavailable, startup/readiness/liveness probes, non-root, read-only root filesystem, dropped capabilities), Service, HPA (2 to 6 replicas at 70% CPU), PodDisruptionBudget |
+| `overlays/dev/` | One replica, no HPA, for a laptop cluster |
+| `overlays/mlflow/` | Adds an MLflow tracking server (SQLite + served artifacts on a PVC), a training Job that registers and gates a model, and points the API at the `champion` alias. API pods stay NotReady until the first champion exists, then become Ready |
+
+The image is multi-stage: it trains a baseline model at build time, so the dev overlay works without MLflow, and runs as a non-root user.
+
+```bash
+make kind-up          # local cluster (kind)
+make deploy-mlflow    # build, load, deploy MLflow + training Job + API
+make smoke            # readiness, model provenance
+make retrain          # run the Job again; the gate decides whether it becomes champion
+make kind-down
+```
+
+CI (`.github/workflows/ci.yml`) runs the test suite, then a `k8s-e2e` job that builds the image, creates a kind cluster, deploys the MLflow overlay, waits for the training Job and API, smoke-tests prediction through the Service, and checks that a second training run is registered as v2 and gated.
+
+SQLite and a single-replica MLflow server are demo choices. For shared use, back MLflow with Postgres and object storage (S3/GCS) and run it behind authentication.
 
 ---
 
@@ -198,7 +246,9 @@ churn-intelligence-platform/
 │   └── main.py
 ├── dashboard/               # Streamlit monitoring UI
 ├── tests/                   # pytest test suite
-├── .github/workflows/       # GitHub Actions CI
+├── deploy/k8s/              # Kustomize base + dev and MLflow overlays
+├── .github/workflows/       # CI: tests + kind end-to-end deploy
+├── Makefile
 ├── docker-compose.yml
 ├── Dockerfile
 └── requirements.txt
@@ -208,7 +258,7 @@ churn-intelligence-platform/
 
 ## 🔧 Extending This System
 
-- **Add retraining triggers**: Wire `monitoring/drift.py` to a Prefect or Airflow task that retrains when PSI > threshold
+- **Drift-triggered retraining**: Wire `monitoring/drift.py` to create the `churn-train` Job (or a Prefect/Airflow task) when PSI exceeds the threshold; the promotion gate already decides whether the result goes live
 - **Persistent logging**: Extend `core/database.py` with a `predictions` table using TimescaleDB for time-series queries
 - **Async batch jobs**: Swap the sync batch endpoint for Celery + Redis for very large workloads
 - **Authentication**: Add API key middleware in `app/core/` before production deployment

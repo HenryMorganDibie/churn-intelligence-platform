@@ -15,17 +15,34 @@ from app.core.schemas import ChurnPrediction
 from app.core.logger import logger
 
 
+def _registry_bundle_path(alias: str) -> tuple[str, dict]:
+    """Resolve a registry alias (e.g. champion) to its run's bundle and download it."""
+    import mlflow
+    from mlflow.tracking import MlflowClient
+
+    mlflow.set_tracking_uri(settings.MLFLOW_TRACKING_URI)
+    mv = MlflowClient().get_model_version_by_alias(settings.MLFLOW_MODEL_NAME, alias)
+    path = mlflow.artifacts.download_artifacts(f"runs:/{mv.run_id}/bundle/churn_model.pkl")
+    return path, {"source": "mlflow", "model_name": settings.MLFLOW_MODEL_NAME,
+                  "alias": alias, "version": mv.version, "run_id": mv.run_id}
+
+
 @lru_cache(maxsize=1)
 def load_artifacts() -> Dict[str, Any]:
-    """Load model artifacts once and cache in memory."""
+    """Load model artifacts once and cache in memory (registry alias or local file)."""
+    if settings.MLFLOW_SERVE_ALIAS:
+        path, provenance = _registry_bundle_path(settings.MLFLOW_SERVE_ALIAS)
+    else:
+        path, provenance = settings.MODEL_PATH, {"source": "file", "path": settings.MODEL_PATH}
     try:
-        with open(settings.MODEL_PATH, "rb") as f:
+        with open(path, "rb") as f:
             artifacts = pickle.load(f)
-        logger.info("Model artifacts loaded successfully.")
-        return artifacts
     except FileNotFoundError:
-        logger.error(f"Model not found at {settings.MODEL_PATH}. Run trainer first.")
+        logger.error(f"Model not found at {path}. Run trainer first.")
         raise
+    artifacts["provenance"] = provenance
+    logger.info(f"Model artifacts loaded ({provenance}).")
+    return artifacts
 
 
 def get_risk_segment(prob: float) -> str:
