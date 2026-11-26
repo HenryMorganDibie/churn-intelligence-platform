@@ -11,3 +11,5 @@ models/*.pkl
 .ruff_cache/
 dist/
 build/
+mlruns/
+mlflow.db

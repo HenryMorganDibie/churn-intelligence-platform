@@ -1,0 +1,11 @@
+.venv/
+venv/
+.git/
+mlruns/
+mlflow.db
+models/*.pkl
+__pycache__/
+*.pyc
+.pytest_cache/
+deploy/
+docs/

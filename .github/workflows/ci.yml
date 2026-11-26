@@ -14,14 +14,78 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Set up Python 3.11
-        uses: actions/setup-python@v4
+        uses: actions/setup-python@v5
         with:
           python-version: "3.11"
+          cache: pip
 
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
           python -m pip install -r requirements.txt
 
-      - name: Run tests
+      - name: Run tests (features, training, champion/challenger gate, MLflow registry serving, API)
         run: python -m pytest tests/ -v --tb=short
+
+  k8s-e2e:
+    # Builds the image, stands up a real kind cluster, deploys the full MLflow overlay
+    # (tracking server, training Job, API serving the "champion" alias) and smoke-tests it.
+    needs: test
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build image
+        run: docker build -t churn-intelligence:local .
+
+      - name: Create kind cluster
+        uses: helm/kind-action@v1
+        with:
+          cluster_name: churn
+
+      - name: Load image into kind
+        run: kind load docker-image churn-intelligence:local --name churn
+
+      - name: Validate manifests (server-side dry run)
+        run: |
+          kubectl apply -k deploy/k8s/base --dry-run=server
+          kubectl apply -k deploy/k8s/overlays/mlflow --dry-run=server
+
+      - name: Deploy MLflow overlay
+        run: kubectl apply -k deploy/k8s/overlays/mlflow
+
+      - name: Wait for MLflow, training Job and API
+        run: |
+          kubectl -n churn rollout status deploy/mlflow --timeout=300s
+          kubectl -n churn wait --for=condition=complete job/churn-train --timeout=600s
+          kubectl -n churn logs job/churn-train | tail -5
+          kubectl -n churn rollout status deploy/churn-api --timeout=300s
+
+      - name: Smoke test through the Service
+        run: |
+          kubectl -n churn port-forward svc/churn-api 8080:80 &
+          sleep 5
+          curl -fsS localhost:8080/health/ready
+          curl -fsS localhost:8080/health/model | tee model.json
+          grep -q '"alias":"champion"' model.json
+          curl -fsS -X POST localhost:8080/predict/ -H 'content-type: application/json' -d '{
+            "customer_id":"CI-1","tenure_days":40,"monthly_charges":120,"total_charges":300,
+            "num_support_tickets":9,"num_logins_last_30d":2,"avg_session_duration_min":3,
+            "plan_changes_last_90d":3,"payment_failures_last_6m":4,"has_contract":false,
+            "is_autopay":false,"product_tier":"basic"}'
+
+      - name: Second training run is gated (registered, not promoted unless better)
+        run: |
+          kubectl -n churn delete job churn-train
+          kubectl apply -k deploy/k8s/overlays/mlflow
+          kubectl -n churn wait --for=condition=complete job/churn-train --timeout=600s
+          kubectl -n churn logs job/churn-train | grep "Registered churn-xgb v2"
+
+      - name: Dump state on failure
+        if: failure()
+        run: |
+          kubectl -n churn get all,pvc,events
+          kubectl -n churn describe pods
+          kubectl -n churn logs deploy/churn-api --tail=100 || true
+          kubectl -n churn logs deploy/mlflow --tail=100 || true

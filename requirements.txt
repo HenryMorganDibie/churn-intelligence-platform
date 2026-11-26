@@ -5,11 +5,14 @@ pydantic==2.9.2
 pydantic-settings==2.5.2
 
 # ML
-xgboost==2.1.1
-scikit-learn==1.5.2
+xgboost==2.1.4
+scikit-learn==1.6.1
 shap==0.46.0
 numpy==1.26.4
 pandas==2.2.3
+
+# Experiment tracking + model registry
+mlflow-skinny==2.17.2
 
 # Database
 sqlalchemy==2.0.35
