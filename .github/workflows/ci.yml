@@ -49,6 +49,8 @@ jobs:
 
       - name: Validate manifests (server-side dry run)
         run: |
+          # Namespaced objects can only be dry-run once the namespace exists.
+          kubectl apply -f deploy/k8s/base/namespace.yaml
           kubectl apply -k deploy/k8s/base --dry-run=server
           kubectl apply -k deploy/k8s/overlays/mlflow --dry-run=server
 
